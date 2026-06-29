@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keryx — Pay-Per-Citation Toll</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e1210;
+    --surface: #151c18;
+    --border: #243028;
+    --text: #d8e6dc;
+    --muted: #6a8870;
+    --accent: #c4813a;       /* oxidized bronze — prices */
+    --green: #4aad6a;        /* patina green — approved */
+    --red: #c0412b;          /* rust red — blocked */
+    --mono: "IBM Plex Mono", monospace;
+    --serif: "Fraunces", Georgia, serif;
+    --sans: "Inter", system-ui, sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .logo { font-family: var(--serif); font-size: 22px; letter-spacing: -.3px; }
+  .logo span { color: var(--accent); font-style: italic; }
+  .stats { display: flex; gap: 28px; align-items: center; }
+  .stat { text-align: right; }
+  .stat-val { font-family: var(--mono); font-size: 18px; color: var(--green); }
+  .stat-lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .mode-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .mode-pill.dry { color: var(--accent); border-color: var(--accent); }
+
+  /* ── layout ── */
+  main { padding: 24px 28px; max-width: 1280px; margin: 0 auto; }
+
+  .top-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px;
+  }
+  .panel h3 {
+    font-family: var(--serif);
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 14px;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+
+  /* ── form elements ── */
+  label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; margin-top: 10px; }
+  input, textarea, select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    margin-top: 12px;
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--accent);
+    color: #0e1210;
+    border: none;
+    border-radius: 4px;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  button.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+
+  .result-box {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    min-height: 36px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .result-box.ok { border-color: var(--green); color: var(--green); }
+  .result-box.err { border-color: var(--red); color: var(--red); }
+
+  /* ── article list ── */
+  .article-item {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .article-item:last-child { border-bottom: none; }
+  .article-item:hover .article-title { color: var(--accent); }
+  .article-title { font-size: 12px; font-weight: 500; margin-bottom: 2px; transition: color .1s; }
+  .article-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* ── similarity bar ── */
+  .sim-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; }
+  .sim-fill { height: 100%; border-radius: 2px; background: var(--green); transition: width .3s; }
+
+  /* ── LEDGER ── */
+  .ledger-section { margin-top: 4px; }
+  .ledger-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .ledger-title {
+    font-family: var(--serif);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -.3px;
+  }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-weight: 500;
+    transition: all .15s;
+    width: auto;
+    margin-top: 0;
+  }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #0e1210; }
+
+  .ledger-table { width: 100%; border-collapse: collapse; }
+  .ledger-table th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--muted);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ledger-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  .ledger-table tr:last-child td { border-bottom: none; }
+  .ledger-table tr:hover td { background: var(--surface); }
+
+  .seal {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 22px;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .seal.ok { background: rgba(74,173,106,.15); color: var(--green); border: 1px solid var(--green); }
+  .seal.err { background: rgba(192,65,43,.15); color: var(--red); border: 1px solid var(--red); }
+
+  .rule-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 10px;
+  }
+  .rule-SETTLED { background: rgba(74,173,106,.12); color: var(--green); }
+  .rule-LOW_SIMILARITY { background: rgba(192,65,43,.12); color: var(--red); }
+  .rule-REPLAY_TOO_SOON { background: rgba(192,65,43,.12); color: var(--red); }
+  .rule-PAYER_RATE_CAP { background: rgba(192,65,43,.12); color: var(--red); }
+  .rule-ARTICLE_VOLUME_ANOMALY { background: rgba(192,65,43,.12); color: var(--red); }
+  .rule-ARTICLE_PAUSED { background: rgba(100,100,100,.15); color: var(--muted); }
+
+  .addr { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .amount { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .ts { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  .empty { padding: 32px; text-align: center; color: var(--muted); font-style: italic; }
+
+  /* ── live ticker ── */
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }
+  .live-dot {
+    display: inline-block; width: 7px; height: 7px;
+    background: var(--green); border-radius: 50%;
+    animation: pulse 2s infinite; margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Keryx <span>κῆρυξ</span></div>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-val" id="stat-citations">0</div>
+      <div class="stat-lbl">Citations Settled</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="stat-payout">$0.000000</div>
+      <div class="stat-lbl">Total Paid Out</div>
+    </div>
+    <div class="mode-pill" id="mode-pill">TEST</div>
+  </div>
+</header>
+
+<main>
+  <div class="top-panels">
+
+    <!-- Panel 1: Register -->
+    <div class="panel">
+      <h3>Register Content</h3>
+      <label>Article URL</label>
+      <input id="reg-url" type="url" placeholder="https://...">
+      <label>Title</label>
+      <input id="reg-title" type="text" placeholder="Article title">
+      <label>Body text</label>
+      <textarea id="reg-text" placeholder="Paste article text here..."></textarea>
+      <label>Price (USDC)</label>
+      <input id="reg-price" type="number" step="0.0001" value="0.001">
+      <label>Pay-to address</label>
+      <input id="reg-payto" type="text" placeholder="0x... (seller wallet)">
+      <button onclick="registerArticle()">Register Article</button>
+      <div class="result-box" id="reg-result"></div>
+    </div>
+
+    <!-- Panel 2: Try Citation -->
+    <div class="panel">
+      <h3>Try a Citation</h3>
+      <label>Select article</label>
+      <select id="cite-article-id"><option value="">— load articles first —</option></select>
+      <label>Cited text (paste snippet an AI agent might quote)</label>
+      <textarea id="cite-text" placeholder="Paste the text your AI cited..."></textarea>
+      <button class="secondary" onclick="checkMatch()">Check Match</button>
+      <div id="match-result" style="display:none;margin-top:8px;">
+        <div class="sim-bar"><div class="sim-fill" id="sim-fill" style="width:0%"></div></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="sim-label"></div>
+      </div>
+      <button onclick="demoCite()">Cite &amp; Pay</button>
+      <div class="result-box" id="cite-result"></div>
+    </div>
+
+    <!-- Panel 3: Registered Content -->
+    <div class="panel">
+      <h3>Registered Content <span style="font-family:var(--mono);font-size:11px;color:var(--muted);" id="art-count"></span></h3>
+      <div id="article-list"><div class="empty">No articles yet</div></div>
+    </div>
+
+  </div>
+
+  <!-- THE LEDGER -->
+  <div class="panel ledger-section">
+    <div class="ledger-header">
+      <div class="ledger-title"><span class="live-dot"></span>The Ledger</div>
+      <div class="filters" id="filter-chips">
+        <button class="chip active" data-filter="ALL" onclick="setFilter('ALL',this)">All</button>
+        <button class="chip" data-filter="SETTLED" onclick="setFilter('SETTLED',this)">Settled</button>
+        <button class="chip" data-filter="LOW_SIMILARITY" onclick="setFilter('LOW_SIMILARITY',this)">Low Similarity</button>
+        <button class="chip" data-filter="REPLAY_TOO_SOON" onclick="setFilter('REPLAY_TOO_SOON',this)">Replay</button>
+        <button class="chip" data-filter="PAYER_RATE_CAP" onclick="setFilter('PAYER_RATE_CAP',this)">Rate Cap</button>
+        <button class="chip" data-filter="ARTICLE_VOLUME_ANOMALY" onclick="setFilter('ARTICLE_VOLUME_ANOMALY',this)">Volume Anomaly</button>
+      </div>
+    </div>
+    <table class="ledger-table">
+      <thead>
+        <tr>
+          <th style="width:32px"></th>
+          <th>Rule</th>
+          <th>Article</th>
+          <th>Payer</th>
+          <th>Similarity</th>
+          <th>Amount</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="ledger-body">
+        <tr><td colspan="7" class="empty">Waiting for citations…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const API = '';
+let allEntries = [];
+let activeFilter = 'ALL';
+let articleMap = {};
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+function shortAddr(addr) {
+  if (!addr || addr.length < 10) return addr ?? '—';
+  return addr.slice(0, 6) + '…' + addr.slice(-4);
+}
+
+function formatTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+function setResult(id, data, ok) {
+  const el = document.getElementById(id);
+  el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.className = 'result-box ' + (ok ? 'ok' : 'err');
+}
+
+async function loadArticles() {
+  const articles = await api('GET', '/articles');
+  articleMap = {};
+  const list = document.getElementById('article-list');
+  const sel = document.getElementById('cite-article-id');
+  sel.innerHTML = '';
+  if (!articles.length) {
+    list.innerHTML = '<div class="empty">No articles yet</div>';
+    return;
+  }
+  list.innerHTML = '';
+  articles.forEach(a => {
+    articleMap[a.id] = a;
+    const div = document.createElement('div');
+    div.className = 'article-item';
+    div.innerHTML = `<div class="article-title">${a.title}</div>
+      <div class="article-meta">${a.id} · <span style="color:var(--accent)">$${a.priceUsdc}</span></div>`;
+    div.onclick = () => { document.getElementById('cite-article-id').value = a.id; };
+    list.appendChild(div);
+    const opt = document.createElement('option');
+    opt.value = a.id; opt.textContent = a.title.slice(0, 45);
+    sel.appendChild(opt);
+  });
+  document.getElementById('art-count').textContent = `(${articles.length})`;
+}
+
+async function loadAudit() {
+  const data = await api('GET', '/audit');
+  document.getElementById('stat-citations').textContent = data.totalCitations;
+  document.getElementById('stat-payout').textContent = '$' + data.totalPaidOutUsdc;
+  allEntries = (data.log ?? []).slice().reverse();
+  renderLedger();
+}
+
+function setFilter(f, el) {
+  activeFilter = f;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderLedger();
+}
+
+function renderLedger() {
+  const rows = activeFilter === 'ALL' ? allEntries :
+    allEntries.filter(e => e.rule === activeFilter);
+  const tbody = document.getElementById('ledger-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No entries</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(e => {
+    const ok = e.allowed;
+    const art = articleMap[e.articleId];
+    const title = art ? art.title.slice(0, 35) : (e.articleId ?? '—').slice(0, 16);
+    const sim = typeof e.similarity === 'number' ? (e.similarity * 100).toFixed(1) + '%' : '—';
+    return `<tr>
+      <td><span class="seal ${ok ? 'ok' : 'err'}">${ok ? '✓' : '✗'}</span></td>
+      <td><span class="rule-badge rule-${e.rule}">${e.rule}</span></td>
+      <td title="${e.articleId}">${title}</td>
+      <td class="addr">${shortAddr(e.payer)}</td>
+      <td>${sim}</td>
+      <td class="amount">${e.allowed ? '$' + e.amountUsdc : '—'}</td>
+      <td class="ts">${formatTime(e.timestamp)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function registerArticle() {
+  const url = document.getElementById('reg-url').value.trim();
+  const title = document.getElementById('reg-title').value.trim();
+  const text = document.getElementById('reg-text').value.trim();
+  const priceUsdc = document.getElementById('reg-price').value.trim();
+  const payTo = document.getElementById('reg-payto').value.trim();
+  if (!url || !text) return setResult('reg-result', 'url and text required', false);
+  const data = await api('POST', '/register', { url, title, text, priceUsdc, payTo });
+  setResult('reg-result', data, !!data.id);
+  loadArticles();
+}
+
+async function checkMatch() {
+  const citedText = document.getElementById('cite-text').value.trim();
+  if (!citedText) return;
+  const data = await api('POST', '/match', { citedText });
+  const mr = document.getElementById('match-result');
+  mr.style.display = 'block';
+  const pct = Math.round((data.score ?? 0) * 100);
+  document.getElementById('sim-fill').style.width = pct + '%';
+  document.getElementById('sim-label').textContent =
+    `${pct}% match — "${(data.title ?? '').slice(0, 40)}" · $${data.priceUsdc ?? '—'}`;
+  if (data.articleId) document.getElementById('cite-article-id').value = data.articleId;
+}
+
+async function demoCite() {
+  const articleId = document.getElementById('cite-article-id').value;
+  const citedText = document.getElementById('cite-text').value.trim();
+  if (!articleId || !citedText) return setResult('cite-result', 'select article and enter text', false);
+  const data = await api('POST', '/demo/cite', { articleId, citedText });
+  setResult('cite-result', data, data.success);
+  loadAudit();
+}
+
+async function loadHealth() {
+  try {
+    const h = await api('GET', '/health');
+    const pill = document.getElementById('mode-pill');
+    if (h.dryRun) { pill.textContent = 'DRY RUN'; pill.classList.add('dry'); }
+    else { pill.textContent = 'LIVE'; pill.classList.remove('dry'); }
+  } catch {}
+}
+
+// Initial load & polling
+loadHealth();
+loadArticles();
+loadAudit();
+setInterval(loadAudit, 3000);
+setInterval(loadArticles, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "keryx",
+  "version": "1.0.0",
+  "description": "Pay-per-citation toll for AI agents — Lepton Agents Hackathon",
+  "type": "module",
+  "engines": { "node": ">=20.18.2" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "start:dry": "DRY_RUN=1 node src/server.mjs",
+    "start:test": "TEST_MODE=1 node src/server.mjs",
+    "seed": "node scripts/seed-fixtures.mjs",
+    "exercise": "node scripts/seed-exercise.mjs",
+    "ingest": "node scripts/ingest-rss.mjs",
+    "generate-wallets": "node scripts/generate-wallets.mjs",
+    "check-balances": "node scripts/check-balances.mjs",
+    "demo": "DRY_RUN=1 node src/demo-agent.mjs"
+  },
+  "dependencies": {
+    "@circle-fin/x402-batching": "^2.0.4",
+    "@x402/core": "^2.3.0",
+    "@x402/evm": "^2.3.0",
+    "viem": "^2.0.0"
+  }
+}
