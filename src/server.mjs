@@ -222,13 +222,21 @@ async function handleCite(req, res, { articleId }) {
 // Routes gateway.pay()'s two fetch calls directly through handleCite,
 // bypassing the network. Called only from handleDemoCite's real-mode path.
 async function _fakeCiteResponse(articleId, init) {
-  // Normalise headers (may be a Headers instance or plain object)
+  // Always lowercase header keys — Node's HTTP server does this automatically but
+  // our mock doesn't. handleCite reads req.headers["payment-signature"] (lowercase);
+  // if "Payment-Signature" arrives with original casing the lookup misses and the
+  // server returns 402 again, causing gateway.pay() to throw "Payment Required".
   const reqHeaders = {};
   if (init.headers instanceof Headers) {
-    init.headers.forEach((v, k) => { reqHeaders[k] = v; });
+    init.headers.forEach((v, k) => { reqHeaders[k.toLowerCase()] = v; });
   } else if (init.headers) {
-    Object.assign(reqHeaders, init.headers);
+    for (const [k, v] of Object.entries(init.headers)) {
+      reqHeaders[k.toLowerCase()] = String(v);
+    }
   }
+
+  _fakeCiteResponse._n = (_fakeCiteResponse._n ?? 0) + 1;
+  console.log(`[fakeCite #${_fakeCiteResponse._n}] method=${init.method ?? "GET"} headers=[${Object.keys(reqHeaders).join(",")}] hasSig=${!!reqHeaders["payment-signature"]}`);
 
   // Normalise body (gateway.pay sends JSON strings)
   let bodyObj = {};
@@ -260,6 +268,7 @@ async function _fakeCiteResponse(articleId, init) {
   };
 
   await handleCite(mockReq, mockRes, { articleId });
+  console.log(`[fakeCite #${_fakeCiteResponse._n}] → status=${respStatus} body=${String(respBody).slice(0, 120)}`);
 
   return new Response(respBody, {
     status:  respStatus,
@@ -321,6 +330,7 @@ async function handleDemoCite(req, res) {
   // globalThis.fetch for those two calls and route them directly through
   // handleCite — no network I/O, no URL construction, works everywhere.
   const privateKey = process.env.BUYER_PRIVATE_KEY;
+  console.log(`[demo/cite] BUYER_PRIVATE_KEY present: ${!!privateKey}, prefix: ${privateKey?.slice(0,6) ?? "MISSING"}`);
   if (!privateKey) {
     return send(res, 500, { error: "BUYER_PRIVATE_KEY not set — run: npm run generate-wallets" });
   }
