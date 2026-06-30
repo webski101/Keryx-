@@ -9,7 +9,7 @@ import { getKv } from "./kv.mjs";
 const WINDOW_MS            = 60_000;
 const REPLAY_GAP_MS        = 5_000;
 const MAX_SINGLE_PAYOUT_USD = 1.0;
-const PAYER_WINDOW_CAP_USD  = 0.05;
+const PAYER_WINDOW_CAP_USD  = 1.00;
 const ARTICLE_VOLUME_CAP    = 20;
 
 function now() { return Date.now(); }
