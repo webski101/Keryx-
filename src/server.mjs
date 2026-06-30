@@ -361,14 +361,20 @@ export async function handler(req, res) {
   }
 }
 
-// ─── local server (skipped on Vercel) ───────────────────────────────────────
+// ─── server instance ─────────────────────────────────────────────────────────
 
 process.on("uncaughtException",  (err)    => console.error("[keryx] uncaughtException:",  err));
 process.on("unhandledRejection", (reason) => console.error("[keryx] unhandledRejection:", reason));
 
+// createServer is called unconditionally so the instance can be exported as the
+// Vercel default export (it expects an http.Server or a handler function).
+const server = createServer(handler);
+
+// Only bind a port when running locally — Vercel manages the socket itself.
 if (!process.env.VERCEL) {
-  const server = createServer(handler);
   server.listen(PORT, () => {
     console.log(`[keryx] ${DRY_RUN ? "DRY_RUN " : ""}${TEST_MODE ? "TEST_MODE " : ""}server running at http://localhost:${PORT}`);
   });
 }
+
+export default server;
