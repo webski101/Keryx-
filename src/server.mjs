@@ -283,7 +283,11 @@ async function handleDemoCite(req, res) {
     console.log(`[demo/cite] Deposit tx: ${depositResult.depositTxHash}`);
   }
 
-  const citeUrl     = `http://localhost:${PORT}/cite/${articleId}`;
+  // On Vercel there is no localhost — use the host the client reached us on.
+  // VERCEL_URL is set automatically by the runtime for every deployment.
+  const host    = process.env.VERCEL_URL ?? req.headers.host ?? `localhost:${PORT}`;
+  const proto   = process.env.VERCEL_URL ? "https" : "http";
+  const citeUrl = `${proto}://${host}/cite/${articleId}`;
   const extraHeaders = simulatedPayer ? { "X-Test-Payer": simulatedPayer } : {};
 
   let result;
