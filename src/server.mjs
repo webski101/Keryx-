@@ -219,6 +219,56 @@ async function handleCite(req, res, { articleId }) {
   });
 }
 
+// Routes gateway.pay()'s two fetch calls directly through handleCite,
+// bypassing the network. Called only from handleDemoCite's real-mode path.
+async function _fakeCiteResponse(articleId, init) {
+  // Normalise headers (may be a Headers instance or plain object)
+  const reqHeaders = {};
+  if (init.headers instanceof Headers) {
+    init.headers.forEach((v, k) => { reqHeaders[k] = v; });
+  } else if (init.headers) {
+    Object.assign(reqHeaders, init.headers);
+  }
+
+  // Normalise body (gateway.pay sends JSON strings)
+  let bodyObj = {};
+  if (init.body) {
+    try { bodyObj = typeof init.body === "string" ? JSON.parse(init.body) : init.body; }
+    catch { /* leave as {} */ }
+  }
+
+  const mockReq = {
+    method:  init.method ?? "GET",
+    url:     `/cite/${articleId}`,
+    headers: reqHeaders,
+    body:    bodyObj,           // picked up by body() helper's req.body fast-path
+    socket:  { remoteAddress: "127.0.0.1" },
+  };
+
+  let respStatus = 200;
+  const respHeaders = {};
+  let respBody = "";
+
+  const mockRes = {
+    headersSent: false,
+    writeHead(status, headers) {
+      respStatus = status;
+      if (headers) Object.assign(respHeaders, headers);
+      this.headersSent = true;
+    },
+    end(data) { respBody = data ?? ""; },
+  };
+
+  await handleCite(mockReq, mockRes, { articleId });
+
+  return new Response(respBody, {
+    status:  respStatus,
+    headers: new Headers(
+      Object.fromEntries(Object.entries(respHeaders).map(([k, v]) => [k, String(v)]))
+    ),
+  });
+}
+
 async function handleDemoCite(req, res) {
   const b = await body(req);
   const {
@@ -263,7 +313,13 @@ async function handleDemoCite(req, res) {
     });
   }
 
-  // ── Real mode: GatewayClient drives the full x402 handshake ───────────────
+  // ── Real mode: GatewayClient drives the x402 handshake in-process ───────────
+  // gateway.pay() makes two HTTP requests to the cite endpoint:
+  //   1. Initial probe → expects 402 + PAYMENT-REQUIRED header
+  //   2. Signed retry  → expects 200 with settlement receipt
+  // On Vercel there is no localhost and no reliable self-URL, so we intercept
+  // globalThis.fetch for those two calls and route them directly through
+  // handleCite — no network I/O, no URL construction, works everywhere.
   const privateKey = process.env.BUYER_PRIVATE_KEY;
   if (!privateKey) {
     return send(res, 500, { error: "BUYER_PRIVATE_KEY not set — run: npm run generate-wallets" });
@@ -283,12 +339,21 @@ async function handleDemoCite(req, res) {
     console.log(`[demo/cite] Deposit tx: ${depositResult.depositTxHash}`);
   }
 
-  // On Vercel there is no localhost — use the host the client reached us on.
-  // VERCEL_URL is set automatically by the runtime for every deployment.
-  const host    = process.env.VERCEL_URL ?? req.headers.host ?? `localhost:${PORT}`;
-  const proto   = process.env.VERCEL_URL ? "https" : "http";
-  const citeUrl = `${proto}://${host}/cite/${articleId}`;
+  // Sentinel URL — never actually fetched; interceptor matches on the path.
+  const citeUrl      = `http://internal/cite/${articleId}`;
+  const citePath     = `/cite/${articleId}`;
   const extraHeaders = simulatedPayer ? { "X-Test-Payer": simulatedPayer } : {};
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const href = typeof input === "string" ? input
+               : input instanceof URL      ? input.href
+               : String(input.url ?? input);
+    let pathname;
+    try { pathname = new URL(href).pathname; } catch { pathname = href; }
+    if (pathname === citePath) return _fakeCiteResponse(articleId, init);
+    return originalFetch(input, init);
+  };
 
   let result;
   try {
@@ -307,6 +372,8 @@ async function handleDemoCite(req, res) {
       return send(res, 502, { error: "Settlement failed", message: msg });
     }
     throw e;
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 
   send(res, 200, {
