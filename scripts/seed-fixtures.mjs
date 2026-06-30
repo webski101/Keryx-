@@ -1,11 +1,22 @@
 /**
  * Register 8 realistic articles for offline demo/testing.
+ * Posts to the running server via HTTP so all storage backends work.
  * Re-run safely — same URL → same id, updates in place.
  */
 
-import { register } from "../src/registry.mjs";
-
+const BASE   = process.env.BASE_URL ?? "http://localhost:3000";
 const SELLER = process.env.SELLER_ADDRESS ?? "0xSELLER0000000000000000000000000000000001";
+
+async function reg(article) {
+  const r = await fetch(`${BASE}/register`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(article),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error ?? r.statusText);
+  return data.id;
+}
 
 const articles = [
   {
@@ -66,9 +77,9 @@ const articles = [
   },
 ];
 
-console.log(`Registering ${articles.length} articles...`);
+console.log(`Registering ${articles.length} articles via ${BASE}...`);
 for (const a of articles) {
-  const id = register(a);
+  const id = await reg(a);
   console.log(`  ✓ [${id}] ${a.title.slice(0, 55)}`);
 }
 console.log("Done. Run npm run exercise to exercise the breaker rules.");

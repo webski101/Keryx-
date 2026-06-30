@@ -1,108 +1,116 @@
 /**
  * Deterministic circuit breaker — 5 named rules, checked in order.
- * First failure wins. Every decision is appended to the in-memory audit log.
+ * State is stored in Vercel KV so it survives across serverless invocations.
+ * Falls back to in-memory KV for local dev.
  */
 
-const WINDOW_MS = 60_000;          // rolling window for rate/volume rules
-const REPLAY_GAP_MS = 5_000;       // min gap between same payer+article
-const MAX_SINGLE_PAYOUT_USD = 1.0; // sanity cap
-const PAYER_WINDOW_CAP_USD = 0.05; // max per payer per 60 s
-const ARTICLE_VOLUME_CAP = 20;     // max citations per article per 60 s
+import { getKv } from "./kv.mjs";
 
-const audit = [];                  // in-memory audit log
-
-// { "payerAddr:articleId" -> timestamps[] }
-const replayTracker = new Map();
-// { payerAddr -> [{ ts, amountUsdc }] }
-const payerSpend = new Map();
-// { articleId -> timestamps[] }
-const articleVolume = new Map();
-// paused article set
-const pausedArticles = new Set();
+const WINDOW_MS            = 60_000;
+const REPLAY_GAP_MS        = 5_000;
+const MAX_SINGLE_PAYOUT_USD = 1.0;
+const PAYER_WINDOW_CAP_USD  = 0.05;
+const ARTICLE_VOLUME_CAP    = 20;
 
 function now() { return Date.now(); }
 
-function prune(arr, cutoff) {
-  const i = arr.findIndex((x) => (x.ts ?? x) >= cutoff);
-  return i === -1 ? [] : arr.slice(i);
+function uid() { return Math.random().toString(36).slice(2); }
+
+async function appendAudit(kv, entry) {
+  const record = { ...entry, timestamp: new Date().toISOString() };
+  await kv.lpush("audit", record);
+  await kv.ltrim("audit", 0, 9_999); // cap at 10 000 entries
 }
 
-function appendAudit(entry) {
-  audit.push({ ...entry, timestamp: new Date().toISOString() });
-  if (audit.length > 10_000) audit.shift(); // cap memory
+export async function getAudit() {
+  const kv      = await getKv();
+  const entries = await kv.lrange("audit", 0, -1);
+  // lpush adds newest first; reverse so callers get chronological order
+  return entries.slice().reverse();
 }
 
-export function getAudit() { return [...audit]; }
-
-export function clearAudit() { audit.length = 0; }
+export async function clearAudit() {
+  const kv = await getKv();
+  await kv.del("audit");
+}
 
 /**
- * Check all rules in order. Returns { allowed: true } or
- * { allowed: false, rule, reason }.
+ * Check all rules in order. Mutates KV state for allowed requests.
+ * Returns { allowed: true } or { allowed: false, rule, reason }.
  */
-export function check({ payer, articleId, amountUsdc, similarity }) {
-  const t = now();
-  const key = `${payer}:${articleId}`;
+export async function check({ payer, articleId, amountUsdc, similarity }) {
+  const kv = await getKv();
+  const t  = now();
 
-  // --- 1. LOW_SIMILARITY ---
+  // ── 1. LOW_SIMILARITY ────────────────────────────────────────────────────────
   if (similarity < 0.3) {
-    const entry = { rule: "LOW_SIMILARITY", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
+    await appendAudit(kv, { rule: "LOW_SIMILARITY", allowed: false, payer, articleId, similarity, amountUsdc });
     return { allowed: false, rule: "LOW_SIMILARITY", reason: `Similarity ${similarity.toFixed(3)} < 0.30` };
   }
 
-  // --- 2. AMOUNT_TOO_LARGE ---
+  // ── 2. AMOUNT_TOO_LARGE ──────────────────────────────────────────────────────
   if (parseFloat(amountUsdc) > MAX_SINGLE_PAYOUT_USD) {
-    const entry = { rule: "AMOUNT_TOO_LARGE", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
+    await appendAudit(kv, { rule: "AMOUNT_TOO_LARGE", allowed: false, payer, articleId, similarity, amountUsdc });
     return { allowed: false, rule: "AMOUNT_TOO_LARGE", reason: `$${amountUsdc} exceeds $${MAX_SINGLE_PAYOUT_USD} cap` };
   }
 
-  // --- 3. REPLAY_TOO_SOON ---
-  const replayTimes = prune(replayTracker.get(key) ?? [], t - REPLAY_GAP_MS);
-  if (replayTimes.length > 0) {
-    const entry = { rule: "REPLAY_TOO_SOON", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
+  // ── 3. REPLAY_TOO_SOON ───────────────────────────────────────────────────────
+  const replayKey = `replay:${payer}:${articleId}`;
+  await kv.zremrangebyscore(replayKey, 0, t - REPLAY_GAP_MS - 1);
+  const replayCount = await kv.zcard(replayKey);
+  if (replayCount > 0) {
+    await appendAudit(kv, { rule: "REPLAY_TOO_SOON", allowed: false, payer, articleId, similarity, amountUsdc });
     return { allowed: false, rule: "REPLAY_TOO_SOON", reason: "Same payer+article within 5 s" };
   }
 
-  // --- 4. PAYER_RATE_CAP ---
-  const spendEntries = prune(payerSpend.get(payer) ?? [], t - WINDOW_MS);
-  const totalSpent = spendEntries.reduce((s, e) => s + e.amount, 0);
+  // ── 4. PAYER_RATE_CAP ────────────────────────────────────────────────────────
+  const spendKey = `spend:${payer}`;
+  await kv.zremrangebyscore(spendKey, 0, t - WINDOW_MS - 1);
+  const spendMembers = await kv.zrange(spendKey, t - WINDOW_MS, "+inf", { byScore: true });
+  // member format: "{amount}:{uid}"
+  const totalSpent = spendMembers.reduce((s, m) => s + parseFloat(m.split(":")[0]), 0);
   if (totalSpent + parseFloat(amountUsdc) > PAYER_WINDOW_CAP_USD) {
-    const entry = { rule: "PAYER_RATE_CAP", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
+    await appendAudit(kv, { rule: "PAYER_RATE_CAP", allowed: false, payer, articleId, similarity, amountUsdc });
     return { allowed: false, rule: "PAYER_RATE_CAP", reason: `Payer would exceed $${PAYER_WINDOW_CAP_USD}/60 s window` };
   }
 
-  // --- 5. ARTICLE_VOLUME_ANOMALY / ARTICLE_PAUSED ---
-  if (pausedArticles.has(articleId)) {
-    const entry = { rule: "ARTICLE_PAUSED", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
+  // ── 5. ARTICLE_PAUSED / ARTICLE_VOLUME_ANOMALY ───────────────────────────────
+  const pauseKey = `paused:${articleId}`;
+  const isPaused = await kv.exists(pauseKey);
+  if (isPaused) {
+    await appendAudit(kv, { rule: "ARTICLE_PAUSED", allowed: false, payer, articleId, similarity, amountUsdc });
     return { allowed: false, rule: "ARTICLE_PAUSED", reason: "Article auto-paused due to volume anomaly" };
   }
-  const volTimes = prune(articleVolume.get(articleId) ?? [], t - WINDOW_MS);
-  if (volTimes.length >= ARTICLE_VOLUME_CAP) {
-    pausedArticles.add(articleId);
-    const entry = { rule: "ARTICLE_VOLUME_ANOMALY", allowed: false, payer, articleId, similarity, amountUsdc };
-    appendAudit(entry);
-    return { allowed: false, rule: "ARTICLE_VOLUME_ANOMALY", reason: `Article cited >20 times in 60 s — auto-paused` };
+  const volKey = `vol:${articleId}`;
+  await kv.zremrangebyscore(volKey, 0, t - WINDOW_MS - 1);
+  const volCount = await kv.zcard(volKey);
+  if (volCount >= ARTICLE_VOLUME_CAP) {
+    await kv.set(pauseKey, 1, { ex: 3600 }); // auto-unpause after 1 hour
+    await appendAudit(kv, { rule: "ARTICLE_VOLUME_ANOMALY", allowed: false, payer, articleId, similarity, amountUsdc });
+    return { allowed: false, rule: "ARTICLE_VOLUME_ANOMALY", reason: "Article cited >20 times in 60 s — auto-paused" };
   }
 
-  // --- ALLOWED — update state ---
-  replayTracker.set(key, [...replayTimes, t]);
-  payerSpend.set(payer, [...spendEntries, { ts: t, amount: parseFloat(amountUsdc) }]);
-  articleVolume.set(articleId, [...volTimes, t]);
+  // ── ALLOWED — update state ───────────────────────────────────────────────────
+  const tag = uid();
+  await kv.zadd(replayKey, { score: t, member: `${t}:${tag}` });
+  await kv.expire(replayKey, Math.ceil(REPLAY_GAP_MS / 1000) + 5);
 
-  const entry = { rule: "SETTLED", allowed: true, payer, articleId, similarity, amountUsdc };
-  appendAudit(entry);
+  await kv.zadd(spendKey, { score: t, member: `${amountUsdc}:${tag}` });
+  await kv.expire(spendKey, Math.ceil(WINDOW_MS / 1000) + 5);
+
+  await kv.zadd(volKey, { score: t, member: `${t}:${tag}` });
+  await kv.expire(volKey, Math.ceil(WINDOW_MS / 1000) + 5);
+
+  await appendAudit(kv, { rule: "SETTLED", allowed: true, payer, articleId, similarity, amountUsdc });
   return { allowed: true };
 }
 
-export function unpause(articleId) {
-  pausedArticles.delete(articleId);
+export async function unpause(articleId) {
+  const kv = await getKv();
+  await kv.del(`paused:${articleId}`);
 }
 
-export function isPaused(articleId) {
-  return pausedArticles.has(articleId);
+export async function isPaused(articleId) {
+  const kv = await getKv();
+  return !!(await kv.exists(`paused:${articleId}`));
 }

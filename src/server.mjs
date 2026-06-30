@@ -10,14 +10,18 @@
  *   GET  /audit             — circuit-breaker audit log
  *   GET  /health            — liveness check
  *   GET  /                  — static dashboard
+ *
+ * On Vercel (process.env.VERCEL set): exports `handler` as default for the
+ * serverless runtime — no server.listen() call. Otherwise starts a local
+ * HTTP server on PORT.
  */
 
-import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import { createServer }      from "node:http";
+import { readFileSync }       from "node:fs";
 import { URL, fileURLToPath } from "node:url";
 
 import { register, get, list, findBestMatch } from "./registry.mjs";
-import { check, getAudit } from "./breaker.mjs";
+import { check, getAudit }                    from "./breaker.mjs";
 import {
   buildPaymentRequirements,
   verify,
@@ -25,13 +29,14 @@ import {
   DRY_RUN,
 } from "./x402.mjs";
 
-const PORT      = parseInt(process.env.PORT ?? "3000", 10);
+const PORT = parseInt(process.env.PORT ?? "3000", 10);
 // TEST_MODE enables the X-Test-Payer header for simulated payer addresses.
-// NEVER enable this on a publicly reachable deployment — any client could
-// rotate payers to bypass PAYER_RATE_CAP and REPLAY_TOO_SOON.
+// NEVER enable this on a publicly reachable deployment — reverse proxies make
+// all external requests appear local, so any visitor could forge payer
+// identities and bypass PAYER_RATE_CAP and REPLAY_TOO_SOON.
 const TEST_MODE = process.env.TEST_MODE === "1";
 
-// Read static dashboard once at startup
+// Read static dashboard once at startup (read-only — works on Vercel)
 const DASHBOARD_PATH = fileURLToPath(new URL("../public/index.html", import.meta.url));
 let dashboardHtml;
 try {
@@ -43,6 +48,12 @@ try {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function body(req) {
+  // Vercel's runtime may pre-parse the body — use it if already present
+  if (req.body !== undefined) {
+    return Promise.resolve(
+      typeof req.body === "string" ? JSON.parse(req.body) : (req.body ?? {})
+    );
+  }
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (c) => (data += c));
@@ -69,7 +80,6 @@ function sendHtml(res, html) {
 }
 
 function routeMatch(pathname, pattern) {
-  // Returns params or null
   const patParts = pattern.split("/");
   const urlParts = pathname.split("/");
   if (patParts.length !== urlParts.length) return null;
@@ -89,7 +99,7 @@ function routeMatch(pathname, pattern) {
 async function handleRegister(req, res) {
   const b = await body(req);
   try {
-    const id = register(b);
+    const id = await register(b);
     send(res, 201, { id, message: "Article registered" });
   } catch (e) {
     send(res, 400, { error: e.message });
@@ -97,28 +107,35 @@ async function handleRegister(req, res) {
 }
 
 async function handleArticles(_req, res) {
-  const articles = list().map(({ id, url, title, priceUsdc, payTo, registeredAt }) => ({
+  const articles = (await list()).map(({ id, url, title, priceUsdc, payTo, registeredAt }) => ({
     id, url, title, priceUsdc, payTo, registeredAt,
   }));
   send(res, 200, articles);
+}
+
+async function handleArticleById(req, res, { articleId }) {
+  const article = await get(articleId);
+  if (!article) return send(res, 404, { error: "Article not found" });
+  const { id, url, title, text, priceUsdc, payTo, registeredAt } = article;
+  send(res, 200, { id, url, title, text, priceUsdc, payTo, registeredAt });
 }
 
 async function handleMatch(req, res) {
   const b = await body(req);
   const { citedText } = b;
   if (!citedText) return send(res, 400, { error: "citedText required" });
-  const result = findBestMatch(citedText);
+  const result = await findBestMatch(citedText);
   if (!result) return send(res, 404, { error: "No articles registered" });
   send(res, 200, {
     articleId: result.article.id,
-    title: result.article.title,
-    score: result.score,
+    title:     result.article.title,
+    score:     result.score,
     priceUsdc: result.article.priceUsdc,
   });
 }
 
 async function handleCite(req, res, { articleId }) {
-  const article = get(articleId);
+  const article = await get(articleId);
   if (!article) return send(res, 404, { error: "Article not found" });
 
   const requirements = buildPaymentRequirements(article.payTo, article.priceUsdc);
@@ -130,14 +147,14 @@ async function handleCite(req, res, { articleId }) {
     const paymentRequired = {
       x402Version: 2,
       resource: {
-        url: `/cite/${articleId}`,
+        url:         `/cite/${articleId}`,
         description: `Citation toll — ${article.title} (${article.priceUsdc} USDC)`,
-        mimeType: "application/json",
+        mimeType:    "application/json",
       },
       accepts: [requirements],
     };
     res.writeHead(402, {
-      "Content-Type": "application/json",
+      "Content-Type":    "application/json",
       "PAYMENT-REQUIRED": Buffer.from(JSON.stringify(paymentRequired)).toString("base64"),
       "Access-Control-Allow-Origin": "*",
     });
@@ -152,11 +169,9 @@ async function handleCite(req, res, { articleId }) {
     return send(res, 400, { error: "Invalid payment-signature header" });
   }
 
-  // ── Breaker check (BEFORE settle — no money moves on a rejection) ────────
-  // Real payer comes from the signed authorization. X-Test-Payer is only honoured
-  // when TEST_MODE=1 — never enable that on a publicly reachable deployment, since
-  // reverse proxies make all external requests appear to come from 127.0.0.1 and a
-  // socket-address check cannot distinguish them from genuine localhost traffic.
+  // ── Breaker check (BEFORE settle) ────────────────────────────────────────
+  // X-Test-Payer is only honoured when TEST_MODE=1 — never enable on a public
+  // deployment; reverse proxies make all external requests appear local.
   const testPayerHeader = TEST_MODE ? req.headers["x-test-payer"] : undefined;
   const payer = (
     testPayerHeader ??
@@ -167,20 +182,20 @@ async function handleCite(req, res, { articleId }) {
 
   const b = await body(req).catch(() => ({}));
   const citedText = b.citedText ?? "";
-  const { containment: similarity } = await import("./fingerprint.mjs")
+  const { containment: sim } = await import("./fingerprint.mjs")
     .then((m) => ({ containment: m.containment(citedText, article.text) }));
-  const breakResult = check({
+
+  const breakResult = await check({
     payer,
     articleId,
     amountUsdc: article.priceUsdc,
-    similarity,
+    similarity: sim,
   });
 
   if (!breakResult.allowed) {
-    // Embed rule name in error string so GatewayClient.pay() can propagate it.
     return send(res, 402, {
-      error: `Circuit breaker: ${breakResult.rule}`,
-      rule: breakResult.rule,
+      error:  `Circuit breaker: ${breakResult.rule}`,
+      rule:   breakResult.rule,
       reason: breakResult.reason,
     });
   }
@@ -193,49 +208,45 @@ async function handleCite(req, res, { articleId }) {
   }
 
   send(res, 200, {
-    success: true,
+    success:     true,
     articleId,
-    title: article.title,
-    amountUsdc: article.priceUsdc,
+    title:       article.title,
+    amountUsdc:  article.priceUsdc,
     payer,
     transaction: settleResult.transaction,
-    similarity,
-    dryRun: DRY_RUN,
+    similarity:  sim,
+    dryRun:      DRY_RUN,
   });
 }
 
 async function handleDemoCite(req, res) {
-  // Server-side agent simulation — no browser wallet needed.
-  // DRY_RUN: fake payload through the same verify/breaker/settle stubs.
-  // Real mode: GatewayClient holds BUYER_PRIVATE_KEY and drives the full
-  //   x402 sign-and-retry handshake against /cite/:articleId on localhost,
-  //   exactly as agent.mts does. The fake payload construction is NOT used
-  //   in real mode — BatchFacilitatorClient.verify() requires resource,
-  //   accepted, payload.signature, and payload.authorization, which only a
-  //   real GatewayClient can produce.
   const b = await body(req);
-  const { articleId, citedText, payer = "0xDEAD000000000000000000000000000000000001", simulatedPayer } = b;
+  const {
+    articleId,
+    citedText,
+    payer           = "0xDEAD000000000000000000000000000000000001",
+    simulatedPayer,
+  } = b;
 
   if (!articleId || !citedText) {
     return send(res, 400, { error: "articleId and citedText required" });
   }
 
   if (DRY_RUN) {
-    // ── DRY_RUN path: fake payload through stubs ───────────────────────────
-    const article = get(articleId);
+    const article = await get(articleId);
     if (!article) return send(res, 404, { error: "Article not found" });
 
     const { containment } = await import("./fingerprint.mjs");
-    const similarity = containment(citedText, article.text);
+    const similarity  = containment(citedText, article.text);
     const requirements = buildPaymentRequirements(article.payTo, article.priceUsdc);
-    const fakePayload = { payer, payload: { from: payer }, x402Version: 2 };
+    const fakePayload  = { payer, payload: { from: payer }, x402Version: 2 };
 
     const verifyResult = await verify(fakePayload, requirements);
     if (!verifyResult.isValid) {
       return send(res, 402, { error: "Verify failed", reason: verifyResult.invalidReason });
     }
 
-    const breakResult = check({ payer, articleId, amountUsdc: article.priceUsdc, similarity });
+    const breakResult = await check({ payer, articleId, amountUsdc: article.priceUsdc, similarity });
     if (!breakResult.allowed) {
       return send(res, 402, { error: "Circuit breaker blocked", rule: breakResult.rule, reason: breakResult.reason });
     }
@@ -261,13 +272,10 @@ async function handleDemoCite(req, res) {
   const { GatewayClient } = await import("@circle-fin/x402-batching/client");
   const gateway = new GatewayClient({ chain: "arcTestnet", privateKey });
 
-  // Deposit the article price into the Gateway if balance is insufficient.
-  // GatewayClient.pay() draws from gateway balance, not the ERC-20 wallet directly.
-  const article = get(articleId);
+  const article = await get(articleId);
   if (!article) return send(res, 404, { error: "Article not found" });
 
-  const balances = await gateway.getBalances();
-  console.log(`[demo/cite] wallet USDC=${balances.wallet.formatted} gateway available=${balances.gateway.formattedAvailable}`);
+  const balances     = await gateway.getBalances();
   const neededAtomic = BigInt(Math.round(parseFloat(article.priceUsdc) * 1_000_000));
   if (balances.gateway.available < neededAtomic) {
     console.log(`[demo/cite] Gateway balance low, depositing ${article.priceUsdc} USDC...`);
@@ -275,16 +283,7 @@ async function handleDemoCite(req, res) {
     console.log(`[demo/cite] Deposit tx: ${depositResult.depositTxHash}`);
   }
 
-  // gateway.pay() handles the complete x402 flow:
-  //   1. POST /cite/:articleId → server returns 402 + PAYMENT-REQUIRED header
-  //   2. GatewayClient reads requirements, signs a proper payload with privateKey
-  //   3. Retries POST with payment-signature header containing the signed payload
-  //   4. /cite/:articleId calls facilitator.verify() then breaker then facilitator.settle()
-  //   5. Returns the 200 response body from /cite/:articleId
-  const citeUrl = `http://localhost:${PORT}/cite/${articleId}`;
-  // simulatedPayer lets the exercise script assign distinct identities per call
-  // without separate wallets. Forwarded as X-Test-Payer and only honoured for
-  // localhost requests (enforced in handleCite).
+  const citeUrl     = `http://localhost:${PORT}/cite/${articleId}`;
   const extraHeaders = simulatedPayer ? { "X-Test-Payer": simulatedPayer } : {};
 
   let result;
@@ -292,75 +291,65 @@ async function handleDemoCite(req, res) {
     result = await gateway.pay(citeUrl, { method: "POST", body: { citedText }, headers: extraHeaders });
   } catch (e) {
     const msg = e.message ?? "";
-    // "Payment failed: Circuit breaker: RULE_NAME" — rule name is parseable
     const ruleMatch = msg.match(/Circuit breaker: (\w+)/);
     if (ruleMatch) {
       return send(res, 402, {
-        error: "Circuit breaker blocked payment",
-        rule: ruleMatch[1],
+        error:  "Circuit breaker blocked payment",
+        rule:   ruleMatch[1],
         reason: msg,
       });
     }
-    // Settle failed (insufficient_balance, etc.) — distinct from an unexpected crash
     if (msg.includes("Settlement failed") || msg.includes("insufficient_balance")) {
       return send(res, 502, { error: "Settlement failed", message: msg });
     }
-    throw e; // re-throw; outer catch returns 500 with full message
+    throw e;
   }
 
-  // result.data is handleCite's 200 body: { success, transaction, similarity, ... }
-  // result.amount is a BigInt from GatewayClient — serialize explicitly.
   send(res, 200, {
     ...result.data,
     formattedAmount: result.formattedAmount,
-    transaction: result.transaction || result.data?.transaction,
-    dryRun: false,
+    transaction:     result.transaction || result.data?.transaction,
+    dryRun:          false,
   });
 }
 
 async function handleAudit(_req, res) {
-  const log = getAudit();
-  const settled = log.filter((e) => e.allowed);
-  const totalPaidOut = settled.reduce((s, e) => s + parseFloat(e.amountUsdc), 0);
+  const log      = await getAudit();
+  const settled  = log.filter((e) => e.allowed);
+  const totalOut = settled.reduce((s, e) => s + parseFloat(e.amountUsdc), 0);
   send(res, 200, {
-    totalCitations: settled.length,
-    totalPaidOutUsdc: totalPaidOut.toFixed(6),
+    totalCitations:   settled.length,
+    totalPaidOutUsdc: totalOut.toFixed(6),
     log,
   });
 }
 
-// ─── server ─────────────────────────────────────────────────────────────────
+// ─── request dispatcher ──────────────────────────────────────────────────────
 
-// Process-level safety net: an unhandled rejection must never kill the server.
-// With `return await` in the dispatcher below this is a last-resort backstop only.
-process.on("uncaughtException", (err) => {
-  console.error("[keryx] uncaughtException (server kept alive):", err);
-});
-process.on("unhandledRejection", (reason) => {
-  console.error("[keryx] unhandledRejection (server kept alive):", reason);
-});
-
-const server = createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost`);
+export async function handler(req, res) {
+  const url      = new URL(req.url, "http://localhost");
   const { pathname } = url;
-  const method = req.method;
+  const method   = req.method;
 
   if (method === "OPTIONS") {
-    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "*" });
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin":  "*",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Allow-Methods": "*",
+    });
     return res.end();
   }
 
-  // `return await` is required here — inside an async function, `return promise`
-  // does NOT place rejections inside the enclosing try/catch; only `return await`
-  // does, because that suspends execution until the promise settles.
   try {
-    if (method === "GET" && pathname === "/") return sendHtml(res, dashboardHtml);
-    if (method === "GET" && pathname === "/health") return send(res, 200, { ok: true, dryRun: DRY_RUN });
+    if (method === "GET"  && pathname === "/")        return sendHtml(res, dashboardHtml);
+    if (method === "GET"  && pathname === "/health")  return send(res, 200, { ok: true, dryRun: DRY_RUN });
     if (method === "POST" && pathname === "/register") return await handleRegister(req, res);
-    if (method === "GET" && pathname === "/articles") return await handleArticles(req, res);
-    if (method === "POST" && pathname === "/match") return await handleMatch(req, res);
+    if (method === "GET"  && pathname === "/articles") return await handleArticles(req, res);
+    const articleParams = routeMatch(pathname, "/articles/:articleId");
+    if (method === "GET"  && articleParams) return await handleArticleById(req, res, articleParams);
+    if (method === "POST" && pathname === "/match")    return await handleMatch(req, res);
     if (method === "POST" && pathname === "/demo/cite") return await handleDemoCite(req, res);
-    if (method === "GET" && pathname === "/audit") return await handleAudit(req, res);
+    if (method === "GET"  && pathname === "/audit")   return await handleAudit(req, res);
 
     const citeParams = routeMatch(pathname, "/cite/:articleId");
     if (method === "POST" && citeParams) return await handleCite(req, res, citeParams);
@@ -370,8 +359,16 @@ const server = createServer(async (req, res) => {
     console.error("[server] request error:", e);
     if (!res.headersSent) send(res, 500, { error: "Internal server error", message: e.message });
   }
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`[keryx] ${DRY_RUN ? "DRY_RUN " : ""}server running at http://localhost:${PORT}`);
-});
+// ─── local server (skipped on Vercel) ───────────────────────────────────────
+
+process.on("uncaughtException",  (err)    => console.error("[keryx] uncaughtException:",  err));
+process.on("unhandledRejection", (reason) => console.error("[keryx] unhandledRejection:", reason));
+
+if (!process.env.VERCEL) {
+  const server = createServer(handler);
+  server.listen(PORT, () => {
+    console.log(`[keryx] ${DRY_RUN ? "DRY_RUN " : ""}${TEST_MODE ? "TEST_MODE " : ""}server running at http://localhost:${PORT}`);
+  });
+}

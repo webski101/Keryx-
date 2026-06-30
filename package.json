@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Pay-per-citation toll for AI agents — Lepton Agents Hackathon",
   "type": "module",
-  "engines": { "node": ">=20.18.2" },
+  "engines": {
+    "node": ">=20.18.2"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "start:dry": "DRY_RUN=1 node src/server.mjs",
@@ -17,6 +19,7 @@
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^2.0.4",
+    "@vercel/kv": "^3.0.0",
     "@x402/core": "^2.3.0",
     "@x402/evm": "^2.3.0",
     "viem": "^2.0.0"

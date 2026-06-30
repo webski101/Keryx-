@@ -17,8 +17,6 @@
  * Usage: node scripts/seed-exercise.mjs
  */
 
-import { list as localList, register as regLocal } from "../src/registry.mjs";
-
 const BASE    = process.env.BASE_URL ?? "http://localhost:3000";
 const DRY_RUN = process.env.DRY_RUN === "1";
 
@@ -87,12 +85,18 @@ function rule(label) {
   console.log(`\n── ${label} ──`);
 }
 
-// ── 1. Get articles — use local registry for full text access ─────────────────
-const articles = localList();
-if (articles.length === 0) {
+// ── 1. Get articles from the running server ───────────────────────────────────
+const articlesIndex = await get("/articles");
+if (articlesIndex.length === 0) {
   console.error("No articles found. Run: npm run seed");
   process.exit(1);
 }
+// /articles omits 'text'; /articles/:id returns the full record
+const articles = await Promise.all(
+  articlesIndex.map(a =>
+    fetch(`${BASE}/articles/${a.id}`).then(r => r.json())
+  )
+);
 const a = articles[0];
 console.log(`Using article: [${a.id}] ${a.title.slice(0, 50)}`);
 
@@ -125,14 +129,14 @@ const capPayer = "0xPAYER_CAP_00000000000000000000000004";
 // Distinct articles prevent REPLAY_TOO_SOON from firing before PAYER_RATE_CAP.
 const capIds = [];
 for (let i = 0; i < 18; i++) {
-  const id = regLocal({
+  const r = await post("/register", {
     url: `https://exercise.test/cap-article-${i}`,
     title: `Rate Cap Test Article ${i}`,
     text: `Quantum cryptography post quantum encryption standards NIST CRYSTALS-Kyber CRYSTALS-Dilithium RSA elliptic curve article number ${i} for rate cap exercise testing purposes only`,
     priceUsdc: "0.003",
     payTo: process.env.SELLER_ADDRESS ?? "0xSELLER0000000000000000000000000000000001",
   });
-  capIds.push(id);
+  capIds.push(r.id);
 }
 let capTotal = 0;
 for (let i = 0; i < capIds.length; i++) {
