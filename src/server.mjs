@@ -387,26 +387,26 @@ async function handleDemoCite(req, res) {
     globalThis.fetch = originalFetch;
   }
 
+  // Record when settlement completed — resolver uses this to estimate the
+  // target block without needing the Circle transfer UUID (which may be null
+  // when the on-chain batch hasn't been mined yet).
+  const settledAt = Date.now();
+
   send(res, 200, {
     ...result.data,
     formattedAmount: result.formattedAmount,
     transaction:     result.transaction || result.data?.transaction,
     dryRun:          false,
+    settledAt,
   });
 }
 
 async function handleResolveTx(req, res) {
   const url = new URL(req.url, "http://localhost");
-  const transferId = url.searchParams.get("id");
-  if (!transferId) return send(res, 400, { error: "Missing ?id=<uuid>" });
+  const settledAt = parseInt(url.searchParams.get("at") ?? "0", 10);
+  if (!settledAt) return send(res, 400, { error: "Missing ?at=<ms-timestamp>" });
 
-  const privateKey = process.env.BUYER_PRIVATE_KEY;
-  if (!privateKey) return send(res, 500, { error: "BUYER_PRIVATE_KEY not set" });
-
-  const { GatewayClient } = await import("@circle-fin/x402-batching/client");
-  const gateway = new GatewayClient({ chain: "arcTestnet", privateKey });
-
-  const explorerUrl = await resolveExplorerUrl(transferId, gateway);
+  const explorerUrl = await resolveExplorerUrl(settledAt);
   send(res, 200, { explorerUrl });
 }
 

@@ -471,20 +471,22 @@ async function demoCite() {
   const data = await api('POST', '/demo/cite', { articleId, citedText });
   const ok = !!data.success;
 
-  if (!ok || data.dryRun || !data.transaction) {
+  if (!ok || data.dryRun) {
     setResult('cite-result', data, ok);
     loadAudit();
     return;
   }
 
   // Phase 2: resolve on-chain tx (real mode only)
+  // settledAt is Date.now() recorded server-side right after gateway.pay() returned.
+  // We use it to estimate the Arc Testnet block where Circle's batch tx landed.
   const display = { ...data };
   setResult('cite-result', display, true,
     '<span style="color:var(--muted)">⏳ Confirming on-chain…</span>');
   loadAudit();
 
   try {
-    const r = await fetch(API + '/resolve-tx?id=' + encodeURIComponent(data.transaction));
+    const r = await fetch(API + '/resolve-tx?at=' + encodeURIComponent(data.settledAt));
     const { explorerUrl } = await r.json();
     const linkHtml = explorerUrl
       ? `<a href="${explorerUrl}" target="_blank" rel="noopener"
