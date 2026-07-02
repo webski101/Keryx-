@@ -22,6 +22,7 @@ import { URL, fileURLToPath } from "node:url";
 
 import { register, get, list, findBestMatch } from "./registry.mjs";
 import { check, getAudit }                    from "./breaker.mjs";
+import { resolveExplorerUrl }                  from "./resolver.mjs";
 import {
   buildPaymentRequirements,
   verify,
@@ -394,6 +395,21 @@ async function handleDemoCite(req, res) {
   });
 }
 
+async function handleResolveTx(req, res) {
+  const url = new URL(req.url, "http://localhost");
+  const transferId = url.searchParams.get("id");
+  if (!transferId) return send(res, 400, { error: "Missing ?id=<uuid>" });
+
+  const privateKey = process.env.BUYER_PRIVATE_KEY;
+  if (!privateKey) return send(res, 500, { error: "BUYER_PRIVATE_KEY not set" });
+
+  const { GatewayClient } = await import("@circle-fin/x402-batching/client");
+  const gateway = new GatewayClient({ chain: "arcTestnet", privateKey });
+
+  const explorerUrl = await resolveExplorerUrl(transferId, gateway);
+  send(res, 200, { explorerUrl });
+}
+
 async function handleAudit(_req, res) {
   const log      = await getAudit();
   const settled  = log.filter((e) => e.allowed);
@@ -430,7 +446,8 @@ export async function handler(req, res) {
     if (method === "GET"  && articleParams) return await handleArticleById(req, res, articleParams);
     if (method === "POST" && pathname === "/match")    return await handleMatch(req, res);
     if (method === "POST" && pathname === "/demo/cite") return await handleDemoCite(req, res);
-    if (method === "GET"  && pathname === "/audit")   return await handleAudit(req, res);
+    if (method === "GET"  && pathname === "/audit")      return await handleAudit(req, res);
+    if (method === "GET"  && pathname === "/resolve-tx") return await handleResolveTx(req, res);
 
     const citeParams = routeMatch(pathname, "/cite/:articleId");
     if (method === "POST" && citeParams) return await handleCite(req, res, citeParams);

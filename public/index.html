@@ -355,10 +355,16 @@ function formatTime(iso) {
   return d.toLocaleTimeString();
 }
 
-function setResult(id, data, ok) {
+function setResult(id, data, ok, extraHtml) {
   const el = document.getElementById(id);
   el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
   el.className = 'result-box ' + (ok ? 'ok' : 'err');
+  if (extraHtml) {
+    const div = document.createElement('div');
+    div.style.cssText = 'margin-top:10px;font-size:13px;';
+    div.innerHTML = extraHtml;
+    el.appendChild(div);
+  }
 }
 
 async function loadArticles() {
@@ -456,9 +462,40 @@ async function demoCite() {
   const articleId = document.getElementById('cite-article-id').value;
   const citedText = document.getElementById('cite-text').value.trim();
   if (!articleId || !citedText) return setResult('cite-result', 'select article and enter text', false);
+
+  // Phase 1: settle
+  const el = document.getElementById('cite-result');
+  el.textContent = 'Settling payment…';
+  el.className = 'result-box';
+
   const data = await api('POST', '/demo/cite', { articleId, citedText });
-  setResult('cite-result', data, data.success);
+  const ok = !!data.success;
+
+  if (!ok || data.dryRun || !data.transaction) {
+    setResult('cite-result', data, ok);
+    loadAudit();
+    return;
+  }
+
+  // Phase 2: resolve on-chain tx (real mode only)
+  const display = { ...data };
+  setResult('cite-result', display, true,
+    '<span style="color:var(--muted)">⏳ Confirming on-chain…</span>');
   loadAudit();
+
+  try {
+    const r = await fetch(API + '/resolve-tx?id=' + encodeURIComponent(data.transaction));
+    const { explorerUrl } = await r.json();
+    const linkHtml = explorerUrl
+      ? `<a href="${explorerUrl}" target="_blank" rel="noopener"
+            style="color:var(--green);text-decoration:none;font-weight:600;">
+           View on Arc Testnet Explorer →
+         </a>`
+      : '<span style="color:var(--muted)">On-chain tx not yet confirmed — check back in a moment.</span>';
+    setResult('cite-result', display, true, linkHtml);
+  } catch {
+    // resolver timed out or failed — leave the settled result as-is
+  }
 }
 
 async function loadHealth() {
